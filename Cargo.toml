@@ -1,0 +1,18 @@
+[package]
+name = "sled-topo-advisor"
+version = "0.1.0"
+edition = "2021"
+description = "NUMA/PCIe topology-aware placement hints for AI workloads on Oxide sleds"
+license = "MPL-2.0"
+
+[lib]
+name = "sled_topo_advisor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sled-advisor"
+path = "src/bin/sled-advisor.rs"
+
+# Deliberately zero external dependencies: this runs on service-processor-adjacent
+# hosts where you don't want cargo pulling half of crates.io just to read sysfs.
+[dependencies]
