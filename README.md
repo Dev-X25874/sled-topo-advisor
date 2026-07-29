@@ -1,58 +1,70 @@
 # sled-topo-advisor
 
-NUMA/PCIe topology-aware placement hints for AI/ML workloads on Oxide sleds.
+NUMA/PCIe topology-aware placement hints for AI/ML workloads, aimed at
+Oxide sleds — but it's just sysfs, so it works on any Linux box.
 
-Generic clouds hide the thing that actually matters for AI: which CPU cores
-and which memory sit physically next to your GPU. You get told "8 vCPUs, 1 GPU"
-and have to guess. Oxide controls the whole rack — firmware, service processor,
-control plane — so this data can be exposed honestly, all the way up.
+## Why this exists
 
-This crate is the missing piece: a sub-microsecond oracle that tells a scheduler
-exactly which cores to pin near which accelerator, and how much you're losing if
-you don't.
+Generic clouds virtualize away the thing that actually matters for AI
+workloads: which CPU cores and which memory sit *physically close* to
+your GPU or accelerator. You get told "8 vCPUs, 1 GPU" and have to guess
+at the topology, or it's actively hidden from you by the hypervisor.
 
-## Why this beats what Oxide ships today
-
-Oxide's control plane (Nexus/Omicron) handles sled-level placement — which sled
-a VM lands on. Nothing in their stack makes within-sled CPU topology decisions or
-emits a `numactl` invocation. This fills that gap.
-
-Benchmarked on real hardware against synthetic multi-NUMA fixtures:
-
-| Scenario | Median latency |
-|---|---|
-| 1-node, no accelerator | < 1 µs |
-| 2-node, 1 GPU (remote node) | 400 ns |
-| 4-node, 2 accelerators (GPU + ProcAccel) | 1.2 µs |
-| No-affinity accelerator (honest unknown) | 600 ns |
-
-The full advisory path for a 4-node/2-GPU topology completes in **1.2 µs**.
-Safe to call once per scheduling decision without budgeting for it.
-
-**vs hwloc** (the standard alternative): hwloc cold-starts in 50–200 ms because
-it builds a complete hardware graph regardless of what you asked for.
-`sled-advisor` opens ~12 sysfs paths and exits — cold start under 3 ms. That's
-the difference between a tool you call per-decision and one you call once at boot
-and hope nothing changed.
-
-Zero external dependencies. The scoring is a direct read of the kernel's SLIT
-distance table — no black box, no model to debug. If you want to know why a
-recommendation said what it said, you read one file.
-
-See [BENCHMARKS.md](./BENCHMARKS.md) for full numbers and reproduction steps.
+Oxide controls the whole rack — sled hardware, service processor, control
+plane — so it's one of the few platforms where this data can be exposed
+honestly, all the way up. That's the actual value: this crate is a small,
+auditable answer to "which cores should my training job pin to, and how
+much am I losing if I don't."
 
 ## What it does
 
-- Reads real NUMA topology from `/sys/devices/system/node/*`, including the
-  kernel's SLIT distance table (not a guess — the actual reported cost of a
-  cross-node memory access).
-- Finds PCIe accelerators (GPUs and PCI class `1200` processing accelerators)
-  from `/sys/bus/pci/devices/*`, along with each one's NUMA affinity.
-- Scores every NUMA node against each accelerator's home node and returns a
-  ranked recommendation, a plain-English verdict, and a ready-to-paste
-  `numactl` invocation.
+- Reads real NUMA topology from `/sys/devices/system/node/*`, including
+  the kernel's SLIT distance table (not a guess — the actual reported
+  cost of a cross-node memory access).
+- Finds PCIe accelerators (GPUs and PCI class `1200` processing
+  accelerators) from `/sys/bus/pci/devices/*`, along with each one's
+  reported NUMA affinity.
+- Scores every NUMA node against each accelerator's home node and hands
+  back a ranked recommendation, a plain-English verdict, and a
+  ready-to-paste `numactl` invocation.
 
-No `hwloc`, no netlink, **zero external crates**.
+No `hwloc`, no netlink, **zero external crates** — this is meant to run
+on hosts where you don't want a dependency tree, and where "why did this
+recommendation say what it said" needs to be answerable by reading one
+file.
+
+## How it fits into the Oxide stack
+
+Oxide's control plane (Nexus/Omicron) makes sled-level placement decisions —
+which sled a VM lands on. Within a sled, CPU-to-accelerator affinity is
+currently left to the workload operator. This crate is the piece that sits
+between those two layers: a topology oracle that a real scheduler, a
+Kubernetes device plugin, or a Nexus placement policy could call to make
+that within-sled decision correctly.
+
+## Performance
+
+Advisory latency benchmarked against synthetic multi-NUMA fixtures (reproducible
+on any machine — no real sysfs or GPU required):
+
+| Scenario | This crate | hwloc (`lstopo`) |
+|---|---|---|
+| Cold-start latency | < 3 ms | 50–200 ms |
+| 1-node / no accelerator | < 1 µs | N/A (full graph always) |
+| 2-node / 1 GPU (remote) | 400 ns | N/A |
+| 4-node / 2 accelerators | 1.2 µs | N/A |
+
+hwloc builds a complete hardware topology graph on every invocation regardless
+of what you asked for — the right tradeoff for a general-purpose library, but
+too heavy for a per-scheduling-decision oracle. This crate reads only the ~12
+sysfs paths it needs and exits.
+
+The NUMA placement penalty this crate helps avoid: on a dual-socket machine
+with a GPU on the remote socket, correct CPU pinning recovers **15–30%
+throughput** on memory-bandwidth-bound training workloads (remote memory
+access at ~140 ns vs local at ~80 ns).
+
+See [BENCHMARKS.md](./BENCHMARKS.md) for full methodology and reproduction steps.
 
 ## Install
 
@@ -97,11 +109,11 @@ for placement in advisor::recommend_all(&topo) {
 
 ## Honesty about what this isn't
 
-This doesn't talk to Oxide's control plane, doesn't touch Hubris, and doesn't
-schedule anything — it's a topology oracle a real scheduler would call. Wiring
-it into Nexus/Omicron placement decisions, or into a Kubernetes device plugin,
-is the natural next step and deliberately left out to keep this crate small and
-dependency-free.
+This doesn't talk to Oxide's control plane, doesn't touch Hubris, and
+doesn't schedule anything — it's a topology *oracle* a real scheduler
+would call. Wiring it into Nexus/Omicron placement decisions, or into a
+Kubernetes device plugin, is the natural next step and deliberately left
+out here to keep this crate small and dependency-free.
 
 ## Tests
 
@@ -109,5 +121,5 @@ dependency-free.
 $ cargo test
 ```
 
-Tests run against synthetic topology fixtures (no real sysfs required), so they
-pass in CI regardless of what hardware the runner has.
+Tests run against synthetic topology fixtures (no real sysfs required),
+so they pass in CI regardless of what hardware the runner has.
