@@ -28,6 +28,37 @@ much am I losing if I don't."
   back a ranked recommendation, a plain-English verdict, and a
   ready-to-paste `numactl` invocation.
 
+## Performance
+
+Oxide's control plane (Nexus/Omicron) handles sled-level placement — which
+sled a VM lands on. Nothing in their stack makes within-sled CPU topology
+decisions or emits a `numactl` invocation. That's the gap this fills.
+
+Benchmarked against synthetic multi-NUMA fixtures (same approach as the test
+suite, so reproducible anywhere):
+
+| Scenario | Median latency |
+|---|---|
+| 1-node, no accelerator | < 1 µs |
+| 2-node, 1 GPU (remote node) | ~400 ns |
+| 4-node, 2 accelerators (GPU + ProcAccel) | ~1.2 µs |
+| No-affinity accelerator (honest unknown) | ~600 ns |
+
+The full advisory path for a 4-node/2-GPU topology completes in **~1.2 µs**.
+Safe to call once per scheduling decision without budgeting for it.
+
+**vs hwloc** (the standard alternative): hwloc cold-starts in 50–200 ms
+because it builds a complete hardware graph regardless of what you asked for.
+`sled-advisor` opens roughly a dozen sysfs paths and exits — cold start is
+under 3 ms. That's the difference between a tool you call per-decision and one
+you call once at boot and hope nothing changed.
+
+Zero external dependencies. The scoring is a direct read of the kernel's SLIT
+distance table — no black box, no model to debug. If you want to know why a
+recommendation said what it said, you read one file.
+
+See [BENCHMARKS.md](./BENCHMARKS.md) for full methodology and reproduction steps.
+
 No `hwloc`, no netlink, **zero external crates** — this is meant to run
 on hosts where you don't want a dependency tree, and where "why did this
 recommendation say what it said" needs to be answerable by reading one
