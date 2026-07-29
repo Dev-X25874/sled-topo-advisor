@@ -16,3 +16,7 @@ path = "src/bin/sled-advisor.rs"
 # Deliberately zero external dependencies: this runs on service-processor-adjacent
 # hosts where you don't want cargo pulling half of crates.io just to read sysfs.
 [dependencies]
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
